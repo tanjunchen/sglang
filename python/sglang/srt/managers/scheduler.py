@@ -285,9 +285,11 @@ class Scheduler(
         )
 
         # Init model config
+        # 初始化 modelconfig 系统配置
         self.model_config = ModelConfig.from_server_args(server_args)
 
         # Init inter-process communication
+        # zmq 连接
         self.init_sockets(server_args, port_args)
 
         # Init pdmux context
@@ -414,6 +416,7 @@ class Scheduler(
             )
 
         # Init memory pool and cache
+        # 初始化 kv cache 和调度队列
         self.init_memory_pool_and_cache()
 
         # Init running status
@@ -487,6 +490,7 @@ class Scheduler(
         self.new_token_ratio = self.init_new_token_ratio
 
         # Init watchdog thread
+        # watch dog 检测进程是否为僵尸进程
         self.watchdog_timeout = server_args.watchdog_timeout
         t = threading.Thread(target=self.watchdog_thread, daemon=True)
         t.start()
@@ -568,6 +572,7 @@ class Scheduler(
             ]
         )
 
+    # tokenizerManager，detokenizer manager 通过 zmp 建立连接
     def init_sockets(self, server_args: ServerArgs, port_args: PortArgs):
         context = zmq.Context(2)
         self.idle_sleeper = None
@@ -958,7 +963,11 @@ class Scheduler(
     def event_loop_normal(self):
         """A normal scheduler loop."""
         while True:
+            # 从 tokenizermanager 获得新请求（可能是新http请求，也可能是还没推理完需要继续推理的请求，
+            # 也可能是其他类型的请求，比如 flushcache，profile，closesession 等等）
             recv_reqs = self.recv_requests()
+            # 处理进来的请求，主要是处理generation的请求，大部份类型的请求不需要进推理，所以走完这个函数也就完了，
+            # 对于generation（也包括embedding）请求，则会构建Req class，插入到waiting_queue里
             self.process_input_requests(recv_reqs)
 
             batch = self.get_next_batch_to_run()
@@ -969,6 +978,7 @@ class Scheduler(
                 self.process_batch_result(batch, result)
             else:
                 # When the server is idle, do self-check and re-init some states
+                # 如果没有新batch，进行一些系统检查和参数初始化（new_token_ratio）
                 self.self_check_during_idle()
 
             self.last_batch = batch
@@ -1627,6 +1637,11 @@ class Scheduler(
             swa_evictable_size,
         )
 
+    # get_next_batch_to_run 是一个调度函数，明确下一个batch 具体跑什么类型的哪些请求。
+    # 我们也可以看到 waiting queue 和 batch 这两个核心结构的用处，waiting queue 放的是需要prefill的请求，不论是新请求，
+    # chunked prefill 请求还是jump forward 请求，都会放进waiting queue，等 get_new_batch_prefill 对这种请求进行处理、解析并构造一个新的batch。
+    # 而decode 阶段，会根据上一轮推理的结果，合并batch，尽量将decode 变成一个大的batch进行处理，
+    # 如果过程中发现存在需要jump forward的请求，则会释放资源，丢回waiting_queue，等 get_new_batch_prefill 再去重新分配。
     def get_next_batch_to_run(self) -> Optional[ScheduleBatch]:
         # Merge the prefill batch into the running batch
         chunked_req_to_exclude = set()
@@ -1665,6 +1680,7 @@ class Scheduler(
                     # Merge running_batch with prefill batch
                     self.running_batch.merge_batch(self.last_batch)
 
+        # 如果有prefill的batch请求，则优先处理prefill，chunked request 在这里会重新获得相关资源
         new_batch = self.get_new_batch_prefill()
 
         need_dp_attn_preparation = require_mlp_sync(self.server_args)
@@ -1681,6 +1697,7 @@ class Scheduler(
         else:
             # Run decode
             if not self.running_batch.is_empty():
+                # 剩下是 decode 的请求，需要进行一些更新
                 self.running_batch = self.update_running_batch(self.running_batch)
                 ret = self.running_batch if not self.running_batch.is_empty() else None
             else:
@@ -1734,6 +1751,7 @@ class Scheduler(
         if self.enable_hierarchical_cache:
             self.tree_cache.check_hicache_events()
 
+        # schedule_policy的部分
         # Get priority queue
         self.policy.calc_priority(self.waiting_queue)
 
@@ -1815,6 +1833,9 @@ class Scheduler(
 
         # Update waiting queue
         can_run_list: List[Req] = adder.can_run_list
+        # 如果 can_run_list 里为空，也就是因为某些原因，add_one_req 没有返回AddReqResult.CONTINUE的情况
+        # 返回None，说明没有新prefill 请求
+        # 那前面说的chunked 请求呢？已经调用过add_being_chunked_req，如果成功也会在can_run_list里
         if len(can_run_list) == 0:
             return None
 
@@ -1823,6 +1844,7 @@ class Scheduler(
             for req in can_run_list:
                 req.add_latency(RequestStage.PREFILL_WAITING)
 
+        # waiting queue重组，不在can run list 里扔进去
         self.waiting_queue = [
             x for x in self.waiting_queue if x not in set(can_run_list)
         ]
@@ -1851,6 +1873,8 @@ class Scheduler(
                     )
 
         # Create a new batch
+        # 构建一个 ScheduleBatch，所以 prefill 会拥有一个新batch
+        # 合理，因为prefill是新请求触发的，请求触发batch合理
         new_batch = ScheduleBatch.init_new(
             can_run_list,
             self.req_to_token_pool,
@@ -1893,16 +1917,19 @@ class Scheduler(
         """Update the current running decoding batch."""
         initial_bs = batch.batch_size()
 
+        # 这里的 filter 逻辑上其实是再过滤一遍，去掉已经结束的请求，以及prefill的请求
         batch.filter_batch()
         if batch.is_empty():
             batch.batch_is_full = False
             return batch
 
         # Check if decode out of memory
+        # 判断是不是超过了decode mem
         if not batch.check_decode_mem(self.decode_mem_cache_buf_multiplier) or (
             TEST_RETRACT and self.forward_ct % TEST_RETRACT_INTERVAL == 0
         ):
             old_ratio = self.new_token_ratio
+            #如果oom，撤回当前的decode batch，塞到waiting 队列中
             retracted_reqs, new_token_ratio, reqs_to_abort = batch.retract_decode(
                 self.server_args
             )
@@ -1923,15 +1950,18 @@ class Scheduler(
             for req in retracted_reqs:
                 self._add_request_to_queue(req, is_retracted=True)
         else:
+            # 每次 decode 都会减小新token生成概率
             self.new_token_ratio = max(
                 self.new_token_ratio - self.new_token_ratio_decay,
                 self.min_new_token_ratio,
             )
 
+        # 再次判断有没有满batch
         if batch.batch_size() < initial_bs:
             batch.batch_is_full = False
 
         # Update batch tensors
+        # 为请求分配具体的kv cache，即分配token_to_kv_pool 里的值
         batch.prepare_for_decode()
         return batch
 
@@ -1941,6 +1971,7 @@ class Scheduler(
     ):
         pass
 
+    # 
     def run_batch(
         self, batch: ScheduleBatch
     ) -> Union[GenerationBatchResult, EmbeddingBatchResult]:
@@ -2055,6 +2086,7 @@ class Scheduler(
             ret = batch_result
         else:  # embedding or reward model
             model_worker_batch = batch.get_model_worker_batch()
+            # 真正 forward 函数，包括forward和sample 过程，这里的launch_done目前没有地方调用，忽略即可
             embeddings = self.tp_worker.forward_batch_embedding(model_worker_batch)
             ret = EmbeddingBatchResult(embeddings=embeddings)
 

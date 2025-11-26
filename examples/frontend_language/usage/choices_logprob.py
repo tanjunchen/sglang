@@ -7,6 +7,7 @@ python choices_logprob.py
 import sglang as sgl
 
 
+# 定义了一个使用 SGLang 的提示词函数 tool_use
 @sgl.function
 def tool_use(s, question):
     s += "To answer this question: " + question + ", "
@@ -24,6 +25,8 @@ def main():
     print("logprobs of choice 2", meta_info["input_token_logprobs"][1])
     print("-" * 50)
 
+    # 分别以单次运行和批量运行的方式调用这个函数，并打印出结果
+    # 模型在做选择时的对数概率（Logprobs），这有助于我们理解模型的决策过程。
     # Run a batch
     questions = [
         "What is 5 + 6?",

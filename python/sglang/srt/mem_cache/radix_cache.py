@@ -405,6 +405,7 @@ class RadixCache(BasePrefixCache):
         # For EAGLE radix cache, we will convert the key to bigram key, e.g. [1,2,3,4] -> [(1,2), (2,3), (3,4)], the length will -1. ((len([(1,2), (2,3), (3,4)]) = len([1,2,3,4]) - 1))
         # So for the corresponding kv length should also -1. Then we get the actual_kv_len, and use it to do later calculation and slicing.
         actual_kv_len = all_token_len - 1 if self.is_eagle else all_token_len
+        # 获得当前完整的输入输出，及其对应的token_to_kv_pool 里的indices
         kv_indices = self.req_to_token_pool.req_to_token[
             req.req_pool_idx, :all_token_len
         ]
@@ -431,6 +432,7 @@ class RadixCache(BasePrefixCache):
             old_prefix_len -= 1
 
         # Radix Cache takes one ref in memory pool
+        # insert 过程中重新获得prefix cache的长度，并释放token_to_kv_pool 中重复token的部分
         new_prefix_len = self.insert(
             RadixKey(page_aligned_token_ids, req.extra_key),
             page_aligned_kv_indices,
@@ -442,6 +444,7 @@ class RadixCache(BasePrefixCache):
         new_indices, new_last_node, _, _ = self.match_prefix(
             RadixKey(token_ids=page_aligned_token_ids, extra_key=req.extra_key)
         )
+        # 调用前缀匹配，获得新的prefix indices，将其中未写入的部分写入req_to_token_pool
         self.req_to_token_pool.write(
             (req.req_pool_idx, slice(old_prefix_len, len(new_indices))),
             new_indices[old_prefix_len:],
@@ -453,6 +456,7 @@ class RadixCache(BasePrefixCache):
         # So we introduce this `last_matched_prefix_len` field to make sure the partial part can be freed correctly.
         req.last_matched_prefix_len = len(new_indices)
 
+        # 加引用
         self.dec_lock_ref(req.last_node)
         self.inc_lock_ref(new_last_node)
 

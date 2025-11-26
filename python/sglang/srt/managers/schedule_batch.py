@@ -104,7 +104,7 @@ class BaseFinishReason:
     def to_json(self):
         raise NotImplementedError()
 
-
+# 匹配了终止的token，比如tokenizer，sampler，scheduler 等设置的eos token
 class FINISH_MATCHED_TOKEN(BaseFinishReason):
     def __init__(self, matched: Union[int, List[int]]):
         super().__init__()
@@ -117,6 +117,7 @@ class FINISH_MATCHED_TOKEN(BaseFinishReason):
         }
 
 
+# 匹配了终止的字符串，一般是sampler设置的
 class FINISH_MATCHED_STR(BaseFinishReason):
     def __init__(self, matched: str):
         super().__init__()
@@ -140,7 +141,7 @@ class FINISHED_MATCHED_REGEX(BaseFinishReason):
             "matched": self.matched,
         }
 
-
+# 匹配了最大输出长度
 class FINISH_LENGTH(BaseFinishReason):
     def __init__(self, length: int):
         super().__init__()
@@ -153,6 +154,7 @@ class FINISH_LENGTH(BaseFinishReason):
         }
 
 
+# 由于其他原因终止，比如请求不合法等等
 class FINISH_ABORT(BaseFinishReason):
     def __init__(self, message=None, status_code=None, err_type=None):
         super().__init__(is_error=True)
@@ -464,7 +466,9 @@ class Req:
         http_worker_ipc: Optional[str] = None,
     ):
         # Input and output info
+        # 请求id, chunkedCache entry的key
         self.rid = rid
+        # 原始请求输入文本字符串
         self.origin_input_text = origin_input_text
         self.origin_input_ids_unpadded = (
             origin_input_ids_unpadded
@@ -545,6 +549,7 @@ class Req:
 
         # Prefix info
         # The indices to kv cache for the shared prefix.
+        # Prefix info，与共享 prefix 的 kvcache 有关
         self.prefix_indices: torch.Tensor = torch.empty((0,), dtype=torch.int64)
         # Number of tokens to run prefill.
         self.extend_input_len = 0
@@ -709,10 +714,12 @@ class Req:
         else:
             self.multimodal_inputs.merge(image_inputs)
 
+    # 用于判断是否可以结束，以及 finished_reason 是哪种情况
     def finished(self) -> bool:
         # Whether request reached finished condition
         return self.finished_reason is not None
 
+    # 初始化本请求下一轮inference需要的参数比如计算需要用多长的kvcache主要是计算fill_ids和extend_input_len）
     def init_next_round_input(self, tree_cache: Optional[BasePrefixCache] = None):
         self.fill_ids = self.origin_input_ids + self.output_ids
         input_len = len(self.fill_ids)
@@ -741,6 +748,7 @@ class Req:
         self.extend_input_len = len(self.fill_ids) - len(self.prefix_indices)
 
     # Based on https://github.com/vllm-project/vllm/blob/7a64d24aad69e4d2548aa0bf528d9fe63428ab01/vllm/transformers_utils/detokenizer.py#L194-L313
+    # 这两个函数通常是用于获取下一轮detokenizer 相关的参数并进行相关配置
     def init_incremental_detokenize(self):
         first_iter = self.surr_offset is None or self.read_offset is None
 
@@ -901,6 +909,7 @@ class Req:
         if self._check_str_based_finish():
             return
 
+    # 重置decode 参数
     def reset_for_retract(self):
         # Increment retraction count before resetting other state. We should not reset this
         # since we are tracking the total number of retractions for each request.
@@ -910,6 +919,7 @@ class Req:
         self.last_node = None
         self.swa_uuid_for_lock = None
         self.extend_input_len = 0
+        # 用于撤回类似的功能，即需要回退decode 的输出
         self.is_retracted = True
         self.input_token_logprobs = None
         self.temp_input_top_logprobs_val = None
@@ -1680,6 +1690,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         self.out_cache_loc = None
         self.seq_lens_sum = self.seq_lens.sum().item()
         self.output_ids = self.output_ids[keep_indices_device]
+        # 是否有必要返回logits
         self.return_logprob = any(req.return_logprob for req in self.reqs)
         if self.return_logprob:
             self.top_logprobs_nums = [self.top_logprobs_nums[i] for i in keep_indices]

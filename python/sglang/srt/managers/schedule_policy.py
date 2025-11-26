@@ -140,6 +140,8 @@ class SchedulePolicy:
                 raise ValueError(f"Unknown CacheAgnostic Policy: {policy=}")
         return prefix_computed
 
+    # _determine_active_policy 中如果发现等待队列太长且默认采用的是LPM（最长前缀匹配），则换成FCFS。
+    # 但如果是dfs-weight则不影响，本质还是计算成本的权衡。
     def _determine_active_policy(self, waiting_queue: List[Req]) -> Policy:
         if self.policy == CacheAwarePolicy.LPM and len(waiting_queue) > 128:
             # Turn off the expensive prefix matching and sorting when the #queue is large.
@@ -192,6 +194,8 @@ class SchedulePolicy:
             # We prefer to set IN_BATCH_PREFIX_CACHING_CHECK_THRESHOLD > 0 because too small
             # threshold means we cannot use in-batch prefix caching for short prefixes.
             # It is kind of common when the engine is long running (e.g., imagine the prefix "the").
+            # 如果当前batch（waiting queue）中，有不少请求有同一个前缀，而且前缀在已有cache中仅匹配了一小部分（<IN_BATCH_PREFIX_CACHING_CHECK_THRESHOLD），
+            # 为了提高整体的cache hit rate，仅优先调度前几个请求（<IN_BATCH_PREFIX_CACHING_DEPRIORITIZE_THRESHOLD)，其他会被放到waiting queue的尾端。
             if len(r.prefix_indices) <= IN_BATCH_PREFIX_CACHING_CHECK_THRESHOLD:
                 in_batch_matching_prefixes, _, _, _ = (
                     self.waiting_queue_radix_tree.match_prefix(
@@ -331,7 +335,10 @@ class PrefillAdder:
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
         self.running_batch = running_batch
         self.new_token_ratio = new_token_ratio
+        # rem_total_tokens 包括prefill和decoding 一共的上下文长度
+        # rem_input_tokens 则只包括prefill 的输入
         self.rem_input_tokens = rem_input_tokens - mixed_with_decode_tokens
+        # rem_chunk_tokens 则是一个chunk可以包含的token数
         self.rem_chunk_tokens = rem_chunk_tokens
         if self.rem_chunk_tokens is not None:
             self.rem_chunk_tokens -= mixed_with_decode_tokens

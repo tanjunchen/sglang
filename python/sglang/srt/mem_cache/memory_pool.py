@@ -76,6 +76,7 @@ def get_tensor_size_bytes(t: Union[torch.Tensor, List[torch.Tensor]]):
     return np.prod(t.shape) * t.dtype.itemsize
 
 
+# ReqToTokenPool 核心数据结构就是free_slots以及req_to_token_pool
 class ReqToTokenPool:
     """A memory pool that maps a request to its token locations."""
 
@@ -464,6 +465,7 @@ class KVCache(abc.ABC):
         self.page_size = page_size
         self.dtype = dtype
         self.device = device
+        # 存储类型不支持 float8_e5m2，会转成uint8.
         if dtype in (torch.float8_e5m2, torch.float8_e4m3fn):
             # NOTE: Store as torch.uint8 because Tensor.index_put is not implemented for torch.float8_e5m2
             self.store_dtype = torch.uint8

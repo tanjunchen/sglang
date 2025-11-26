@@ -68,6 +68,7 @@ class ForwardMode(IntEnum):
     # Decode one token.
     DECODE = auto()
     # Contains both EXTEND and DECODE when doing chunked prefill.
+    # # 即一个batch 里既有prefill，又有decode
     MIXED = auto()
     # No sequence to forward. For data parallel attention, some workers will be IDLE if no sequence are allocated.
     IDLE = auto()
@@ -75,6 +76,7 @@ class ForwardMode(IntEnum):
     # Used in speculative decoding: verify a batch in the target model.
     TARGET_VERIFY = auto()
     # Used in speculative decoding: extend a batch in the draft model.
+    # 投机推理的模式，自回归不会用到
     DRAFT_EXTEND = auto()
 
     DRAFT_EXTEND_V2 = auto()

@@ -306,6 +306,13 @@ class ModelRunner:
             self.init_threads_binding()
 
         # Get memory before model loading
+        # 这里的关键有几点：
+        # 1. 初始化分布式beckend，如果是cuda，则会用nccl的后端，这里的关键函数是init_distributed_environment
+        # 2. 获得当前系统中可用的显存（对齐到多个rank上的最小值）
+        #       这里的关键函数是get_available_gpu_memory，先拿local的free memory，再通过torch.distributed.ReduceOp.MIN
+        #       获得多个rank中的最小值，作为整个分布式系统的采用值，有趣的是，sglang 还拿最终值和本地值做了一次比较
+        #       如果 min_per_gpu_memory < local_gpu_memory * 0.9, 则会系统层面抛错
+
         min_per_gpu_memory = self.init_torch_distributed()
 
         # CPU offload
@@ -468,12 +475,24 @@ class ModelRunner:
             enable_batch_invariant_mode()
 
         # Init memory pool and attention backends
+        # 有了min_per_gpu_memory，就可以初始化memory pool了
+        # max_running_requests 是最多可用跑多少请求，max_total_tokens 是可以存多少token
+        # 注意，这里最终传递给 token_to_kv_pool的 tokens_num 是 min(max_total_tokens, profile_num_tokens(min_per_gpu_memory)
+        # 所以其实是取用户配置和系统状态中的小值
+        # 分别是 req_to_token_pool 和 token_to_kv_pool的数组的一维维度
+        # 这里也有几个关键步骤：
+        # 1. 确实 kv cache 存储的数据类型，这个配置参数会传进来
+        # 2. 初始化 req_to_token_pool
+        # 3. 根据 model config 里的 attention 架构，选择对应的 token_to_kv_pool，比如 MLA，MHA，doubleSparsity 等
+        #    维度是(self.max_total_num_tokens, (head_num, head_dim, layer_num))
+
         self.init_memory_pool(
             min_per_gpu_memory,
             server_args.max_running_requests,
             server_args.max_total_tokens,
         )
         if self.device == "cuda":
+            # cublas 的初始化（用一个小 matmul 做系统预热），初始化attentionbackend和cudagraph
             self.init_cublas()
             self.init_attention_backend()
             self.init_device_graphs()
@@ -2157,6 +2176,8 @@ class ModelRunner:
 
         return output
 
+    # 而 model_runner._forward_raw 逻辑是如下的, 可以见到如果 forwardbatch 支持cudagraph，
+    # 则会优先以 cudagraph 方式执行，否则根据各自的 forward mode 进行推理。
     def _forward_raw(
         self,
         forward_batch: ForwardBatch,

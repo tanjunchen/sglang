@@ -414,6 +414,7 @@ class ModelConfig:
         self.num_nextn_predict_layers = getattr(
             self.hf_text_config, "num_nextn_predict_layers", None
         )
+        # 词表大小，和tokenizer/sampling有关
         self.vocab_size = self.hf_text_config.vocab_size
 
     def get_total_num_attention_heads(self) -> int:

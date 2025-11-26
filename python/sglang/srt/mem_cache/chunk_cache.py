@@ -44,6 +44,7 @@ class ChunkCache(BasePrefixCache):
     def reset(self):
         pass
 
+    # 前缀匹配
     def match_prefix(self, **unused_kwargs) -> MatchResult:
         return MatchResult(
             device_indices=torch.empty((0,), dtype=torch.int64),
